@@ -4,7 +4,9 @@ Minimal modular component loading system for dynamic library management with cra
 
 ## Purpose
 
-Provides a reliable module loader that can dynamically load/unload shared libraries, validate module interfaces, and automatically unload modules on crashes (SIGSEGV) without terminating the main program.
+Provides a reliable module loader that can dynamically load/unload shared libraries, validate module interfaces, and automatically unload modules on fatal signals without terminating the main program.
+
+The system handles all fatal signals (SIGSEGV, SIGBUS, SIGFPE, SIGILL, SIGABRT, SIGSYS) by automatically unloading the crashed module and continuing operation.
 
 ## Build
 

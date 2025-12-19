@@ -8,7 +8,7 @@
 #include <stdlib.h>
 #include <unistd.h>
 
-/* Флаг активности модуля - используется для предотвращения SIGSEGV из выгруженных модулей */
+/* флаг активности модуля - используется для предотвращения фатальных сигналов из выгруженных модулей */
 static atomic_bool g_module_active = ATOMIC_VAR_INIT(false);
 /* ID потока для возможности его завершения */
 static pthread_t g_thread = 0;
@@ -20,7 +20,7 @@ void mod_hello(void) {
     fflush(stdout);
 }
 
-/* Поток, который через 3 секунды вызывает SIGSEGV */
+/* поток, который через 3 секунды вызывает SIGSEGV */
 static void *mod_crash_thread(void *arg) {
     (void)arg;
     
@@ -34,7 +34,7 @@ static void *mod_crash_thread(void *arg) {
         return NULL; /* Модуль был выгружен, не вызываем SIGSEGV */
     }
     
-    /* Намеренно вызываем SIGSEGV через разыменование NULL */
+    /* намеренно вызываем SIGSEGV через разыменование NULL */
     int *p = NULL;
     *p = 42;
     return NULL;
@@ -59,7 +59,7 @@ int mod_init(void) {
 /* Функция деинициализации модуля (обязательная, вызывается явно основной программой) */
 __attribute__((visibility("default")))
 void mod_fini(void) {
-    /* Сбрасываем флаг активности, чтобы поток не вызывал SIGSEGV */
+    /* сбрасываем флаг активности, чтобы поток не вызывал фатальные сигналы */
     atomic_store(&g_module_active, false);
     
     /* Явно завершаем поток, если он еще работает */

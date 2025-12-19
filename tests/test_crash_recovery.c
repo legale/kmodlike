@@ -17,15 +17,16 @@
         } \
     } while (0)
 
-static atomic_bool g_sigsegv_received = ATOMIC_VAR_INIT(false);
+static atomic_bool g_fatal_signal_received = ATOMIC_VAR_INIT(false);
 
-static void sigsegv_handler(int sig, siginfo_t *info, void *context)
+static void fatal_signal_handler(int sig, siginfo_t *info, void *context)
 {
     (void)info;
     (void)context;
 
-    if (sig == SIGSEGV) {
-        atomic_store(&g_sigsegv_received, true);
+    if (sig == SIGSEGV || sig == SIGBUS || sig == SIGFPE ||
+            sig == SIGILL || sig == SIGABRT || sig == SIGSYS) {
+        atomic_store(&g_fatal_signal_received, true);
     }
 }
 
@@ -33,13 +34,18 @@ static int setup_signal_handler(void)
 {
     struct sigaction sa;
 
+    int signals[] = {SIGSEGV, SIGBUS, SIGFPE, SIGILL, SIGABRT, SIGSYS};
+    size_t i;
+
     memset(&sa, 0, sizeof(sa));
-    sa.sa_sigaction = sigsegv_handler;
+    sa.sa_sigaction = fatal_signal_handler;
     sa.sa_flags = SA_SIGINFO;
     sigemptyset(&sa.sa_mask);
 
-    if (sigaction(SIGSEGV, &sa, NULL) != 0) {
-        return -1;
+    for (i = 0; i < sizeof(signals) / sizeof(signals[0]); i++) {
+        if (sigaction(signals[i], &sa, NULL) != 0) {
+            return -1;
+        }
     }
 
     return 0;
@@ -66,10 +72,10 @@ static int test_crash_recovery(void)
     for (i = 0; i < 4; i++) {
         sleep(1);
 
-        if (atomic_load(&g_sigsegv_received)) {
-            fprintf(stderr, "sigsegv received, unloading module\n");
+        if (atomic_load(&g_fatal_signal_received)) {
+            fprintf(stderr, "fatal signal received, unloading module\n");
             module_loader_unload(loader);
-            atomic_store(&g_sigsegv_received, false);
+            atomic_store(&g_fatal_signal_received, false);
             break;
         }
 

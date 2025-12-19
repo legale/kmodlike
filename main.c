@@ -14,33 +14,57 @@
 #include <unistd.h>
 
 static module_loader_t *g_module_loader = NULL;
-static atomic_bool g_sigsegv_received = ATOMIC_VAR_INIT(false);
+static atomic_bool g_fatal_signal_received = ATOMIC_VAR_INIT(false);
 
-static void sigsegv_handler(int sig, siginfo_t *info, void *context)
+static const char *signal_name(int sig)
+{
+    switch (sig) {
+    case SIGSEGV:
+        return "SIGSEGV";
+    case SIGBUS:
+        return "SIGBUS";
+    case SIGFPE:
+        return "SIGFPE";
+    case SIGILL:
+        return "SIGILL";
+    case SIGABRT:
+        return "SIGABRT";
+    case SIGSYS:
+        return "SIGSYS";
+    default:
+        return "UNKNOWN";
+    }
+}
+
+static void fatal_signal_handler(int sig, siginfo_t *info, void *context)
 {
     (void)info;
     (void)context;
 
-    if (sig == SIGSEGV) {
-        if (g_module_loader != NULL &&
-                module_loader_get_state(g_module_loader) == MODULE_STATE_LOADED) {
-            atomic_store(&g_sigsegv_received, true);
-        }
+    if (g_module_loader != NULL &&
+            module_loader_get_state(g_module_loader) == MODULE_STATE_LOADED) {
+        fprintf(stderr, "fatal signal %s received from module\n", signal_name(sig));
+        atomic_store(&g_fatal_signal_received, true);
     }
 }
 
 static void setup_signal_handlers(void)
 {
     struct sigaction sa;
+    int signals[] = {SIGSEGV, SIGBUS, SIGFPE, SIGILL, SIGABRT, SIGSYS};
+    size_t i;
 
     memset(&sa, 0, sizeof(sa));
-    sa.sa_sigaction = sigsegv_handler;
+    sa.sa_sigaction = fatal_signal_handler;
     sa.sa_flags = SA_SIGINFO;
     sigemptyset(&sa.sa_mask);
 
-    if (sigaction(SIGSEGV, &sa, NULL) != 0) {
-        fprintf(stderr, "failed to set sigsegv handler: %s\n", strerror(errno));
-        exit(1);
+    for (i = 0; i < sizeof(signals) / sizeof(signals[0]); i++) {
+        if (sigaction(signals[i], &sa, NULL) != 0) {
+            fprintf(stderr, "failed to set handler for signal %d: %s\n",
+                    signals[i], strerror(errno));
+            exit(1);
+        }
     }
 }
 
@@ -122,11 +146,11 @@ int main(int argc, char **argv)
     while (1) {
         sleep(1);
 
-        if (atomic_load(&g_sigsegv_received)) {
-            fprintf(stderr, "sigsegv received from module, unloading...\n");
+        if (atomic_load(&g_fatal_signal_received)) {
+            fprintf(stderr, "fatal signal received from module, unloading...\n");
             module_loader_unload(g_module_loader);
             fprintf(stderr, "module crashed and was unloaded\n");
-            atomic_store(&g_sigsegv_received, false);
+            atomic_store(&g_fatal_signal_received, false);
             continue;
         }
 
