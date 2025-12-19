@@ -8,6 +8,8 @@ Provides a reliable module loader that can dynamically load/unload shared librar
 
 The system handles all fatal signals (SIGSEGV, SIGBUS, SIGFPE, SIGILL, SIGABRT, SIGSYS) by automatically unloading the crashed module and continuing operation.
 
+Remote control is available via RPC over Unix domain socket. Default socket path is `/var/run/<bin_name>.sock` with fallback to `/tmp/<bin_name>.sock` if write access to `/var/run` is not available.
+
 ## Build
 
 ```bash

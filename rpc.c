@@ -1,8 +1,7 @@
 #include "rpc.h"
-#include <arpa/inet.h>
 #include <errno.h>
+#include <libgen.h>
 #include <limits.h>
-#include <netinet/in.h>
 #include <pthread.h>
 #include <stdbool.h>
 #include <stdint.h>
@@ -10,6 +9,7 @@
 #include <stdlib.h>
 #include <string.h>
 #include <sys/socket.h>
+#include <sys/un.h>
 #include <time.h>
 #include <unistd.h>
 
@@ -19,12 +19,13 @@
 
 /* Structure to track client requests */
 typedef struct {
-  struct sockaddr_in addr;
+  struct sockaddr_un addr;
   socklen_t addr_len;
 } client_info_t;
 
 /* Global context */
 static rpc_context_t g_ctx = {0};
+static char g_socket_path[RPC_SOCKET_PATH_MAX] = {0};
 
 /* Simple logging macro */
 #define RPC_LOG(fmt, ...)                                                      \
@@ -411,11 +412,32 @@ static void *rpc_server_thread(void *arg) {
   return NULL;
 }
 
-int32_t rpc_client_call(const char *server_ip, int32_t port, int32_t argc,
+int rpc_get_default_path(const char *bin_name, char *path, size_t path_size)
+{
+    const char *base;
+    char bin_copy[256];
+    int ret;
+
+    if (bin_name == NULL || path == NULL || path_size < RPC_SOCKET_PATH_MAX) {
+        return -1;
+    }
+
+    strncpy(bin_copy, bin_name, sizeof(bin_copy) - 1);
+    bin_copy[sizeof(bin_copy) - 1] = '\0';
+    base = basename(bin_copy);
+
+    ret = snprintf(path, path_size, "/var/run/%s.sock", base);
+    if (ret < 0 || (size_t)ret >= path_size) {
+        return -1;
+    }
+
+    return 0;
+}
+
+int32_t rpc_client_call(const char *socket_path, int32_t argc,
                         char **argv, char *response, size_t response_size) {
   int32_t client_sock;
-  struct sockaddr_in server_addr;
-  socklen_t server_len = sizeof(server_addr);
+  struct sockaddr_un server_addr;
   ssize_t bytes_sent, bytes_received;
   struct timeval tv;
   char request_buffer[RPC_MAX_PACKET_SIZE];
@@ -423,10 +445,16 @@ int32_t rpc_client_call(const char *server_ip, int32_t port, int32_t argc,
   size_t pos = 0;
   int32_t len;
   size_t remaining;
+  size_t path_len;
 
   /* Parameter validation */
-  if (argc < 1 || argv == NULL || server_ip == NULL || response == NULL ||
+  if (argc < 1 || argv == NULL || socket_path == NULL || response == NULL ||
       response_size == 0) {
+    return RPC_ERR_INVALID_PARAM;
+  }
+
+  path_len = strlen(socket_path);
+  if (path_len >= sizeof(server_addr.sun_path)) {
     return RPC_ERR_INVALID_PARAM;
   }
 
@@ -436,12 +464,11 @@ int32_t rpc_client_call(const char *server_ip, int32_t port, int32_t argc,
       continue;
     }
 
-    remaining = RPC_MAX_PACKET_SIZE - pos - 1; /* -1 for final null */
+    remaining = RPC_MAX_PACKET_SIZE - pos - 1;
     if (remaining <= 1) {
       break;
     }
 
-    /* Copy argument followed by null terminator */
     len = snprintf(request_buffer + pos, remaining, "%s%c", argv[i], '\0');
     if (len < 0 || (size_t)len >= remaining) {
       break;
@@ -449,15 +476,14 @@ int32_t rpc_client_call(const char *server_ip, int32_t port, int32_t argc,
     pos += (size_t)len;
   }
 
-  /* Ensure the request is properly terminated */
   if (pos < RPC_MAX_PACKET_SIZE) {
     request_buffer[pos] = '\0';
   } else {
     request_buffer[RPC_MAX_PACKET_SIZE - 1] = '\0';
   }
 
-  /* Create UDP socket */
-  client_sock = socket(AF_INET, SOCK_DGRAM, 0);
+  /* Create Unix domain socket */
+  client_sock = socket(AF_UNIX, SOCK_DGRAM, 0);
   if (client_sock < 0) {
     RPC_LOG("error create socket error='%s'", strerror(errno));
     return RPC_ERR_SOCKET_ERROR;
@@ -474,18 +500,20 @@ int32_t rpc_client_call(const char *server_ip, int32_t port, int32_t argc,
 
   /* Configure server address */
   memset(&server_addr, 0, sizeof(server_addr));
-  server_addr.sin_family = AF_INET;
-  server_addr.sin_port = htons((uint16_t)port);
+  server_addr.sun_family = AF_UNIX;
+  strncpy(server_addr.sun_path, socket_path, sizeof(server_addr.sun_path) - 1);
+  server_addr.sun_path[sizeof(server_addr.sun_path) - 1] = '\0';
 
-  if (inet_pton(AF_INET, server_ip, &server_addr.sin_addr) <= 0) {
-    RPC_LOG("invalid ipv4=%s", server_ip);
+  /* Connect to server */
+  if (connect(client_sock, (struct sockaddr *)&server_addr,
+              sizeof(server_addr)) < 0) {
+    RPC_LOG("error connect error='%s'", strerror(errno));
     close(client_sock);
-    return RPC_ERR_INVALID_PARAM;
+    return RPC_ERR_NETWORK;
   }
 
   /* Send request to server */
-  bytes_sent = sendto(client_sock, request_buffer, pos, 0,
-                      (struct sockaddr *)&server_addr, server_len);
+  bytes_sent = send(client_sock, request_buffer, pos, 0);
   if (bytes_sent < 0) {
     RPC_LOG("error send error='%s'", strerror(errno));
     close(client_sock);
@@ -493,8 +521,7 @@ int32_t rpc_client_call(const char *server_ip, int32_t port, int32_t argc,
   }
 
   /* Receive response from server */
-  bytes_received = recvfrom(client_sock, response, response_size - 1, 0,
-                            (struct sockaddr *)&server_addr, &server_len);
+  bytes_received = recv(client_sock, response, response_size - 1, 0);
 
   close(client_sock);
 
@@ -508,42 +535,111 @@ int32_t rpc_client_call(const char *server_ip, int32_t port, int32_t argc,
   return RPC_ERR_SUCCESS;
 }
 
-rpc_context_t *rpc_init(void) {
-  struct sockaddr_in server_addr;
+rpc_context_t *rpc_init(const char *socket_path) {
+  struct sockaddr_un server_addr;
+  size_t path_len;
+  const char *default_path = NULL;
 
   /* Initialize the keep_running flag */
   atomic_store(&g_ctx.keep_running, true);
 
-  /* Create UDP socket */
-  g_ctx.sock_fd = socket(AF_INET, SOCK_DGRAM, 0);
+  if (socket_path == NULL) {
+    if (rpc_get_default_path("kmodlike", g_socket_path,
+                sizeof(g_socket_path)) != 0) {
+      RPC_LOG("error getting default socket path");
+      return NULL;
+    }
+    default_path = g_socket_path;
+    socket_path = default_path;
+  } else {
+    size_t len = strlen(socket_path);
+    if (len >= sizeof(g_socket_path)) {
+        RPC_LOG("socket path too long");
+        return NULL;
+    }
+    strncpy(g_socket_path, socket_path, sizeof(g_socket_path) - 1);
+    g_socket_path[sizeof(g_socket_path) - 1] = '\0';
+  }
+
+  path_len = strlen(socket_path);
+  if (path_len >= sizeof(server_addr.sun_path)) {
+    RPC_LOG("socket path too long");
+    return NULL;
+  }
+
+  path_len = strlen(socket_path);
+  if (path_len >= sizeof(server_addr.sun_path)) {
+    RPC_LOG("socket path too long");
+    return NULL;
+  }
+
+  /* Remove existing socket file if it exists */
+  unlink(socket_path);
+
+  /* Create Unix domain socket */
+  g_ctx.sock_fd = socket(AF_UNIX, SOCK_DGRAM, 0);
   if (g_ctx.sock_fd < 0) {
     RPC_LOG("error create socket: %s", strerror(errno));
     return NULL;
   }
 
-  /* Set SO_REUSEADDR option */
-  int optval = 1;
-  if (setsockopt(g_ctx.sock_fd, SOL_SOCKET, SO_REUSEADDR, &optval,
-                 sizeof(optval))) {
-    RPC_LOG("error setsockopt SO_REUSEADDR error=%s", strerror(errno));
-    close(g_ctx.sock_fd);
-    g_ctx.sock_fd = -1;
-    return NULL;
-  }
-
   /* Configure server address */
   memset(&server_addr, 0, sizeof(server_addr));
-  server_addr.sin_family = AF_INET;
-  server_addr.sin_addr.s_addr = htonl(INADDR_ANY);
-  server_addr.sin_port = htons(DEFAULT_RPC_PORT);
+  server_addr.sun_family = AF_UNIX;
+  memcpy(server_addr.sun_path, socket_path, path_len + 1);
 
   /* Bind socket to address */
   if (bind(g_ctx.sock_fd, (struct sockaddr *)&server_addr,
            sizeof(server_addr)) < 0) {
-    RPC_LOG("bind socket error=%s", strerror(errno));
-    close(g_ctx.sock_fd);
-    g_ctx.sock_fd = -1;
-    return NULL;
+    /* If bind to /var/run failed and using default path, try /tmp */
+    if (default_path != NULL && errno == EACCES) {
+      RPC_LOG("cannot bind to %s, trying /tmp fallback", socket_path);
+      close(g_ctx.sock_fd);
+
+      {
+        char bin_name[256];
+        char name_no_ext[256];
+        const char *base;
+        size_t base_len;
+        strncpy(bin_name, default_path, sizeof(bin_name) - 1);
+        bin_name[sizeof(bin_name) - 1] = '\0';
+        base = basename(bin_name);
+        base_len = strlen(base);
+        if (base_len >= 5 && strcmp(base + base_len - 5, ".sock") == 0) {
+          strncpy(name_no_ext, base, base_len - 5);
+          name_no_ext[base_len - 5] = '\0';
+          snprintf(g_socket_path, sizeof(g_socket_path), "/tmp/%s.sock", name_no_ext);
+        } else {
+          snprintf(g_socket_path, sizeof(g_socket_path), "/tmp/%s.sock", base);
+        }
+      }
+      socket_path = g_socket_path;
+      path_len = strlen(socket_path);
+      unlink(socket_path);
+
+      g_ctx.sock_fd = socket(AF_UNIX, SOCK_DGRAM, 0);
+      if (g_ctx.sock_fd < 0) {
+        RPC_LOG("error create socket: %s", strerror(errno));
+        return NULL;
+      }
+
+      memset(&server_addr, 0, sizeof(server_addr));
+      server_addr.sun_family = AF_UNIX;
+      memcpy(server_addr.sun_path, socket_path, path_len + 1);
+
+      if (bind(g_ctx.sock_fd, (struct sockaddr *)&server_addr,
+               sizeof(server_addr)) < 0) {
+        RPC_LOG("bind socket error=%s", strerror(errno));
+        close(g_ctx.sock_fd);
+        g_ctx.sock_fd = -1;
+        return NULL;
+      }
+    } else {
+      RPC_LOG("bind socket error=%s", strerror(errno));
+      close(g_ctx.sock_fd);
+      g_ctx.sock_fd = -1;
+      return NULL;
+    }
   }
 
   /* Start server thread */
@@ -551,6 +647,7 @@ rpc_context_t *rpc_init(void) {
       0) {
     RPC_LOG("create server thread error=%s", strerror(errno));
     close(g_ctx.sock_fd);
+    unlink(socket_path);
     g_ctx.sock_fd = -1;
     return NULL;
   }
@@ -558,8 +655,23 @@ rpc_context_t *rpc_init(void) {
   return &g_ctx;
 }
 
+int rpc_get_socket_path(char *path, size_t path_size)
+{
+    if (path == NULL || path_size < RPC_SOCKET_PATH_MAX) {
+        return -1;
+    }
+
+    if (g_socket_path[0] == '\0') {
+        return -1;
+    }
+
+    strncpy(path, g_socket_path, path_size - 1);
+    path[path_size - 1] = '\0';
+    return 0;
+}
+
 int rpc_deinit() {
-  // check if rpc server is running
+  /* check if rpc server is running */
   if (!atomic_load(&g_ctx.keep_running)) {
     return EINVAL;
   }
@@ -576,5 +688,12 @@ int rpc_deinit() {
     close(g_ctx.sock_fd);
     g_ctx.sock_fd = -1;
   }
+
+  /* Remove socket file */
+  if (g_socket_path[0] != '\0') {
+    unlink(g_socket_path);
+    g_socket_path[0] = '\0';
+  }
+
   return 0;
 }

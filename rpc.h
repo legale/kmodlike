@@ -24,8 +24,8 @@
 #define MAX_FUNCTIONS 100
 #define MAX_ARGS 10
 #define MAX_LINE_LENGTH 256
-#define DEFAULT_RPC_PORT 8888
 #define MAX_PACKET_SIZE 4096
+#define RPC_SOCKET_PATH_MAX 256
 
 /* Function typedefs */
 typedef int32_t (*rpc_cb)(int32_t argc, char **argv, char *buf, size_t bufsize);
@@ -63,16 +63,31 @@ typedef struct {
 } rpc_context_t;
 
 /**
+ * Get default RPC socket path
+ * @param bin_name binary name (e.g., from argv[0])
+ * @param path buffer to store path (must be at least RPC_SOCKET_PATH_MAX)
+ * @return 0 on success, -1 on error
+ */
+int rpc_get_default_path(const char *bin_name, char *path, size_t path_size);
+
+/**
  * Initialize the RPC server
- *
+ * @param socket_path path to Unix domain socket (NULL for default)
  * @return rpc_context_t * on success, NULL on failure
  */
-rpc_context_t *rpc_init(void);
+rpc_context_t *rpc_init(const char *socket_path);
 
 /**
  * Clean up and shut down the RPC server
  */
 int rpc_deinit(void);
+
+/**
+ * Get current socket path used by RPC server
+ * @param path buffer to store path (must be at least RPC_SOCKET_PATH_MAX)
+ * @return 0 on success, -1 on error
+ */
+int rpc_get_socket_path(char *path, size_t path_size);
 
 /**
  * Register a function callback with the RPC server
@@ -107,15 +122,14 @@ const char *help_func(int32_t argc, char **argv, char *buf, size_t bufsize);
 /**
  * Send an RPC request to a server and wait for a response
  *
- * @param server_ip IP address of the RPC server
- * @param port Server port number
+ * @param socket_path path to Unix domain socket
  * @param argc Number of arguments (including function name)
  * @param argv Array of arguments (argv[0] is function name)
  * @param response Buffer to store response
  * @param response_size Size of response buffer
  * @return RPC_ERR_SUCCESS on success, rpc_error_code_t on failure
  */
-int32_t rpc_client_call(const char *server_ip, int32_t port, int32_t argc,
+int32_t rpc_client_call(const char *socket_path, int32_t argc,
                         char **argv, char *response, size_t response_size);
 
 #endif /* RPC_H */

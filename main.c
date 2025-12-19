@@ -71,16 +71,27 @@ static void setup_signal_handlers(void)
 static int run_rpc_client(int argc, char **argv)
 {
     char response[MAX_PACKET_SIZE];
-    const char *server_ip = "127.0.0.1";
-    int port = DEFAULT_RPC_PORT;
+    char socket_path[RPC_SOCKET_PATH_MAX];
+    char tmp_path[RPC_SOCKET_PATH_MAX];
     int32_t ret;
     char *rpc_argv[MAX_ARGS];
     int32_t rpc_argc = 0;
+    const char *base;
 
     if (argc < 2) {
         fprintf(stderr, "usage: %s insmod <path> | %s rmmod\n", argv[0], argv[0]);
         return 1;
     }
+
+    if (rpc_get_default_path(argv[0], socket_path, sizeof(socket_path)) != 0) {
+        fprintf(stderr, "failed to get socket path\n");
+        return 1;
+    }
+
+    /* Prepare /tmp fallback path */
+    base = strrchr(argv[0], '/');
+    base = (base != NULL) ? base + 1 : argv[0];
+    snprintf(tmp_path, sizeof(tmp_path), "/tmp/%s.sock", base);
 
     rpc_argv[rpc_argc++] = argv[1];
 
@@ -93,8 +104,14 @@ static int run_rpc_client(int argc, char **argv)
         }
     }
 
-    ret = rpc_client_call(server_ip, port, rpc_argc, rpc_argv, response,
+    /* Try /var/run first, then /tmp fallback */
+    ret = rpc_client_call(socket_path, rpc_argc, rpc_argv, response,
             sizeof(response));
+    if (ret != RPC_ERR_SUCCESS) {
+        /* Try /tmp fallback */
+        ret = rpc_client_call(tmp_path, rpc_argc, rpc_argv, response,
+                sizeof(response));
+    }
 
     if (ret != RPC_ERR_SUCCESS) {
         fprintf(stderr, "rpc call failed: %d\n", ret);
@@ -127,7 +144,7 @@ int main(int argc, char **argv)
         return 1;
     }
 
-    if (rpc_init() == NULL) {
+    if (rpc_init(NULL) == NULL) {
         fprintf(stderr, "failed to initialize rpc server\n");
         module_loader_destroy(g_module_loader);
         return 1;
@@ -139,8 +156,15 @@ int main(int argc, char **argv)
     register_str_func("rmmod", rpc_rmmod_func);
     register_str_func("help", help_func);
 
-    fprintf(stderr, "kmodlike daemon started, rpc server on port %d\n",
-            DEFAULT_RPC_PORT);
+    {
+        char socket_path[RPC_SOCKET_PATH_MAX];
+        if (rpc_get_socket_path(socket_path, sizeof(socket_path)) == 0) {
+            fprintf(stderr, "kmodlike daemon started, rpc server on socket %s\n",
+                    socket_path);
+        } else {
+            fprintf(stderr, "kmodlike daemon started\n");
+        }
+    }
     fprintf(stderr, "use: ./kmodlike insmod mod.so or ./kmodlike rmmod\n");
 
     while (1) {
