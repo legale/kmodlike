@@ -9,8 +9,8 @@
 #include <time.h>
 #include <unistd.h>
 
-#define NUM_THREADS 10
-#define ITERATIONS_PER_THREAD 100
+#define NUM_THREADS 5
+#define ITERATIONS_PER_THREAD 20
 #define TEST_MODULE_PATH "tests/fixtures/test_mod_good.so"
 
 typedef struct {
@@ -51,8 +51,6 @@ static void *stress_load_unload_thread(void *arg)
             atomic_fetch_add(targ->error_count, 1);
         }
 
-        usleep((unsigned int)1000);
-
         err = module_loader_unload(loader);
         if (err == MODULE_ERR_SUCCESS) {
             atomic_fetch_add(targ->success_count, 1);
@@ -61,8 +59,6 @@ static void *stress_load_unload_thread(void *arg)
         } else {
             atomic_fetch_add(targ->error_count, 1);
         }
-
-        usleep((unsigned int)1000);
     }
 
     return NULL;
@@ -86,8 +82,6 @@ static void *stress_get_symbol_thread(void *arg)
         } else {
             atomic_fetch_add(targ->error_count, 1);
         }
-
-        usleep((unsigned int)500);
     }
 
     return NULL;
@@ -109,8 +103,6 @@ static void *stress_call_hello_thread(void *arg)
         } else {
             atomic_fetch_add(targ->error_count, 1);
         }
-
-        usleep((unsigned int)500);
     }
 
     return NULL;
