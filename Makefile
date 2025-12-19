@@ -19,15 +19,17 @@ MOD_TARGET = mod.so
 LIB_TARGET = libmodule.so
 
 # Тестовые файлы
-TEST_SRC = tests/test_module_loader.c tests/test_crash_recovery.c
+TEST_SRC = tests/test_module_loader.c tests/test_crash_recovery.c tests/test_stress_concurrent.c tests/test_stress_rpc.c
 TEST_FIXTURES = tests/fixtures/test_mod_good.c tests/fixtures/test_mod_no_init.c tests/fixtures/test_mod_bad_init.c tests/fixtures/test_mod_crash.c
 TEST_OBJ = $(TEST_SRC:.c=.o)
 TEST_FIXTURE_OBJ = $(TEST_FIXTURES:.c=.o)
 TEST_FIXTURE_SO = $(TEST_FIXTURES:.c=.so)
 TEST_BIN = tests/test_module_loader
 TEST_INT_BIN = tests/test_crash_recovery
+TEST_STRESS_BIN = tests/test_stress_concurrent
+TEST_STRESS_RPC_BIN = tests/test_stress_rpc
 
-.PHONY: all bin mod lib clean test test-unit test-integration
+.PHONY: all bin mod lib clean test test-unit test-integration test-stress test-stress-rpc
 
 # Сборка всего
 all: bin mod
@@ -69,6 +71,14 @@ $(TEST_BIN): tests/test_module_loader.o $(LIB_OBJ) $(TEST_FIXTURE_SO)
 $(TEST_INT_BIN): tests/test_crash_recovery.o $(LIB_OBJ) $(TEST_FIXTURE_SO)
 	$(CC) $(TEST_CFLAGS) -o $@ tests/test_crash_recovery.o $(LIB_OBJ) $(TEST_LDFLAGS)
 
+# Стресс-тесты
+$(TEST_STRESS_BIN): tests/test_stress_concurrent.o $(LIB_OBJ) $(TEST_FIXTURE_SO)
+	$(CC) $(TEST_CFLAGS) -o $@ tests/test_stress_concurrent.o $(LIB_OBJ) $(TEST_LDFLAGS)
+
+# RPC стресс-тесты
+$(TEST_STRESS_RPC_BIN): tests/test_stress_rpc.o $(LIB_OBJ) rpc.o rpc_commands.o $(TEST_FIXTURE_SO)
+	$(CC) $(TEST_CFLAGS) -o $@ tests/test_stress_rpc.o $(LIB_OBJ) rpc.o rpc_commands.o $(TEST_LDFLAGS)
+
 # Запуск unit тестов
 test-unit: $(TEST_BIN)
 	$(TEST_BIN)
@@ -77,11 +87,19 @@ test-unit: $(TEST_BIN)
 test-integration: $(TEST_INT_BIN)
 	$(TEST_INT_BIN)
 
+# Запуск стресс-тестов
+test-stress: $(TEST_STRESS_BIN)
+	$(TEST_STRESS_BIN)
+
+# Запуск RPC стресс-тестов
+test-stress-rpc: $(TEST_STRESS_RPC_BIN)
+	$(TEST_STRESS_RPC_BIN)
+
 # Все тесты
-test: test-unit test-integration
+test: test-unit test-integration test-stress test-stress-rpc
 
 # Очистка
 clean:
 	rm -f $(MAIN_OBJ) $(MOD_OBJ) $(LIB_OBJ) $(TEST_OBJ) $(TEST_FIXTURE_OBJ) $(TEST_FIXTURE_SO)
-	rm -f $(BIN_TARGET) $(MOD_TARGET) $(LIB_TARGET) $(TEST_BIN) $(TEST_INT_BIN)
+	rm -f $(BIN_TARGET) $(MOD_TARGET) $(LIB_TARGET) $(TEST_BIN) $(TEST_INT_BIN) $(TEST_STRESS_BIN) $(TEST_STRESS_RPC_BIN)
 

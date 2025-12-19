@@ -23,6 +23,6 @@ void module_fini(void)
 __attribute__((visibility("default")))
 void mod_hello(void)
 {
-    printf("hello from test module\n");
+    /* silent for stress tests */
 }
 

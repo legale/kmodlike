@@ -26,6 +26,7 @@ typedef struct {
 /* Global context */
 static rpc_context_t g_ctx = {0};
 static char g_socket_path[RPC_SOCKET_PATH_MAX] = {0};
+static pthread_mutex_t g_ctx_mutex = PTHREAD_MUTEX_INITIALIZER;
 
 /* Simple logging macro */
 #define RPC_LOG(fmt, ...)                                                      \
@@ -33,25 +34,33 @@ static char g_socket_path[RPC_SOCKET_PATH_MAX] = {0};
 
 /* Function implementations */
 const char *help_func(int32_t argc, char **argv, char *buf, size_t bufsize) {
-  (void)argc;
-  (void)argv;
-
   size_t left = bufsize;
   size_t written = 0;
   char *p = buf;
+  uint32_t function_count;
+  uint32_t i;
+
+  (void)argc;
+  (void)argv;
 
   buf[0] = '\0';
 
-  for (uint32_t i = 0; i < g_ctx.function_count; i++) {
-    if (g_ctx.functions[i].name[0] == '\0')
+  pthread_mutex_lock(&g_ctx_mutex);
+  function_count = g_ctx.function_count;
+
+  for (i = 0; i < function_count; i++) {
+    if (g_ctx.functions[i].name[0] == '\0') {
       continue;
+    }
 
     written = snprintf(p, left, "%s\n", g_ctx.functions[i].name);
-    if (written >= left)
+    if (written >= left) {
       break;
+    }
     left -= written;
     p += written;
   }
+  pthread_mutex_unlock(&g_ctx_mutex);
 
   return buf;
 }
@@ -184,12 +193,16 @@ int32_t rpc_register(const char *name, rpc_cb func) {
 
 int32_t register_str_func(const char *name, rpc_string_cb func) {
   size_t name_len;
+  int32_t ret;
 
   if ((name == NULL) || (func == NULL)) {
     return RPC_ERR_INVALID_PARAM;
   }
 
+  pthread_mutex_lock(&g_ctx_mutex);
+
   if (g_ctx.function_count >= MAX_FUNCTIONS) {
+    pthread_mutex_unlock(&g_ctx_mutex);
     return RPC_ERR_MAX_FUNCTIONS_REACHED;
   }
 
@@ -203,21 +216,37 @@ int32_t register_str_func(const char *name, rpc_string_cb func) {
   g_ctx.functions[g_ctx.function_count].func = func;
   g_ctx.function_count++;
 
-  return RPC_ERR_SUCCESS;
+  ret = RPC_ERR_SUCCESS;
+  pthread_mutex_unlock(&g_ctx_mutex);
+
+  return ret;
 }
 
 static const char *call_function(const char *name, int32_t argc, char **argv,
                                  char *buf, size_t bufsize) {
+  rpc_string_cb func = NULL;
+  uint32_t function_count;
+  uint32_t i;
+
   if (name == NULL) {
     return "-1";
   }
 
-  for (uint32_t i = 0; i < g_ctx.function_count; i++) {
+  pthread_mutex_lock(&g_ctx_mutex);
+  function_count = g_ctx.function_count;
+
+  for (i = 0; i < function_count; i++) {
     if (strcmp(name, g_ctx.functions[i].name) == 0) {
       if (g_ctx.functions[i].func != NULL) {
-        return g_ctx.functions[i].func(argc, argv, buf, bufsize);
+        func = g_ctx.functions[i].func;
+        break;
       }
     }
+  }
+  pthread_mutex_unlock(&g_ctx_mutex);
+
+  if (func != NULL) {
+    return func(argc, argv, buf, bufsize);
   }
 
   /* Call echo with the new set of arguments */
@@ -544,6 +573,8 @@ rpc_context_t *rpc_init(const char *socket_path, module_loader_t *module_loader)
   size_t path_len;
   const char *default_path = NULL;
 
+  pthread_mutex_lock(&g_ctx_mutex);
+
   /* Initialize the keep_running flag */
   atomic_store(&g_ctx.keep_running, true);
   g_ctx.module_loader = module_loader;
@@ -552,6 +583,7 @@ rpc_context_t *rpc_init(const char *socket_path, module_loader_t *module_loader)
     if (rpc_get_default_path("kmodlike", g_socket_path,
                 sizeof(g_socket_path)) != 0) {
       RPC_LOG("error getting default socket path");
+      pthread_mutex_unlock(&g_ctx_mutex);
       return NULL;
     }
     default_path = g_socket_path;
@@ -560,6 +592,7 @@ rpc_context_t *rpc_init(const char *socket_path, module_loader_t *module_loader)
     size_t len = strlen(socket_path);
     if (len >= sizeof(g_socket_path)) {
         RPC_LOG("socket path too long");
+        pthread_mutex_unlock(&g_ctx_mutex);
         return NULL;
     }
     strncpy(g_socket_path, socket_path, sizeof(g_socket_path) - 1);
@@ -569,6 +602,7 @@ rpc_context_t *rpc_init(const char *socket_path, module_loader_t *module_loader)
   path_len = strlen(socket_path);
   if (path_len >= sizeof(server_addr.sun_path)) {
     RPC_LOG("socket path too long");
+    pthread_mutex_unlock(&g_ctx_mutex);
     return NULL;
   }
 
@@ -579,6 +613,7 @@ rpc_context_t *rpc_init(const char *socket_path, module_loader_t *module_loader)
   g_ctx.sock_fd = socket(AF_UNIX, SOCK_DGRAM, 0);
   if (g_ctx.sock_fd < 0) {
     RPC_LOG("error create socket: %s", strerror(errno));
+    pthread_mutex_unlock(&g_ctx_mutex);
     return NULL;
   }
 
@@ -619,6 +654,7 @@ rpc_context_t *rpc_init(const char *socket_path, module_loader_t *module_loader)
             RPC_LOG("socket path too long");
             close(g_ctx.sock_fd);
             g_ctx.sock_fd = -1;
+            pthread_mutex_unlock(&g_ctx_mutex);
             return NULL;
           }
         } else {
@@ -626,6 +662,7 @@ rpc_context_t *rpc_init(const char *socket_path, module_loader_t *module_loader)
             RPC_LOG("socket path too long");
             close(g_ctx.sock_fd);
             g_ctx.sock_fd = -1;
+            pthread_mutex_unlock(&g_ctx_mutex);
             return NULL;
           }
           ret = snprintf(g_socket_path, sizeof(g_socket_path), "/tmp/%.*s.sock",
@@ -634,6 +671,7 @@ rpc_context_t *rpc_init(const char *socket_path, module_loader_t *module_loader)
             RPC_LOG("socket path too long");
             close(g_ctx.sock_fd);
             g_ctx.sock_fd = -1;
+            pthread_mutex_unlock(&g_ctx_mutex);
             return NULL;
           }
         }
@@ -645,6 +683,7 @@ rpc_context_t *rpc_init(const char *socket_path, module_loader_t *module_loader)
       g_ctx.sock_fd = socket(AF_UNIX, SOCK_DGRAM, 0);
       if (g_ctx.sock_fd < 0) {
         RPC_LOG("error create socket: %s", strerror(errno));
+        pthread_mutex_unlock(&g_ctx_mutex);
         return NULL;
       }
 
@@ -657,12 +696,14 @@ rpc_context_t *rpc_init(const char *socket_path, module_loader_t *module_loader)
         RPC_LOG("bind socket error=%s", strerror(errno));
         close(g_ctx.sock_fd);
         g_ctx.sock_fd = -1;
+        pthread_mutex_unlock(&g_ctx_mutex);
         return NULL;
       }
     } else {
       RPC_LOG("bind socket error=%s", strerror(errno));
       close(g_ctx.sock_fd);
       g_ctx.sock_fd = -1;
+      pthread_mutex_unlock(&g_ctx_mutex);
       return NULL;
     }
   }
@@ -674,9 +715,11 @@ rpc_context_t *rpc_init(const char *socket_path, module_loader_t *module_loader)
     close(g_ctx.sock_fd);
     unlink(socket_path);
     g_ctx.sock_fd = -1;
+    pthread_mutex_unlock(&g_ctx_mutex);
     return NULL;
   }
 
+  pthread_mutex_unlock(&g_ctx_mutex);
   return &g_ctx;
 }
 
@@ -705,13 +748,20 @@ int rpc_deinit() {
   if (!atomic_load(&g_ctx.keep_running)) {
     return EINVAL;
   }
+
+  pthread_mutex_lock(&g_ctx_mutex);
+
   /* Signal the server thread to exit */
   atomic_store(&g_ctx.keep_running, false);
+
+  pthread_mutex_unlock(&g_ctx_mutex);
 
   /* Join the server thread */
   if (pthread_join(g_ctx.server_thread, NULL) != 0) {
     RPC_LOG("failed to join server thread error=%s", strerror(errno));
   }
+
+  pthread_mutex_lock(&g_ctx_mutex);
 
   /* Close the socket */
   if (g_ctx.sock_fd >= 0) {
@@ -724,6 +774,8 @@ int rpc_deinit() {
     unlink(g_socket_path);
     g_socket_path[0] = '\0';
   }
+
+  pthread_mutex_unlock(&g_ctx_mutex);
 
   return 0;
 }

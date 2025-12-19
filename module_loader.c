@@ -21,6 +21,7 @@ struct module_loader {
     uint32_t interface_version;
     pthread_mutex_t mutex;
     atomic_bool loaded;
+    atomic_int ref_count;
     char path[MODULE_PATH_MAX];
     module_error_t last_error;
 };
@@ -40,6 +41,7 @@ module_loader_t *module_loader_create(void)
     }
 
     loader->loaded = ATOMIC_VAR_INIT(false);
+    loader->ref_count = ATOMIC_VAR_INIT(0);
     loader->last_error = MODULE_ERR_SUCCESS;
     loader->interface_version = 0U;
     loader->get_version_func = NULL;
@@ -160,6 +162,7 @@ module_error_t module_loader_load(module_loader_t *loader, const char *path,
     strncpy(loader->path, path, MODULE_PATH_MAX - 1U);
     loader->path[MODULE_PATH_MAX - 1U] = '\0';
     atomic_store(&loader->loaded, true);
+    atomic_store(&loader->ref_count, 0);
     loader->last_error = MODULE_ERR_SUCCESS;
 
     pthread_mutex_unlock(&loader->mutex);
@@ -168,6 +171,8 @@ module_error_t module_loader_load(module_loader_t *loader, const char *path,
 
 module_error_t module_loader_unload(module_loader_t *loader)
 {
+    int ref_count;
+
     if (loader == NULL) {
         return MODULE_ERR_INVALID_PARAM;
     }
@@ -178,6 +183,13 @@ module_error_t module_loader_unload(module_loader_t *loader)
         pthread_mutex_unlock(&loader->mutex);
         loader->last_error = MODULE_ERR_NOT_LOADED;
         return MODULE_ERR_NOT_LOADED;
+    }
+
+    ref_count = atomic_load(&loader->ref_count);
+    if (ref_count > 0) {
+        pthread_mutex_unlock(&loader->mutex);
+        loader->last_error = MODULE_ERR_IN_USE;
+        return MODULE_ERR_IN_USE;
     }
 
     if (loader->fini_func != NULL) {
@@ -192,6 +204,7 @@ module_error_t module_loader_unload(module_loader_t *loader)
     loader->hello_func = NULL;
     loader->interface_version = 0U;
     atomic_store(&loader->loaded, false);
+    atomic_store(&loader->ref_count, 0);
     loader->last_error = MODULE_ERR_SUCCESS;
 
     pthread_mutex_unlock(&loader->mutex);
@@ -211,14 +224,22 @@ module_state_t module_loader_get_state(const module_loader_t *loader)
 module_error_t module_loader_get_symbol(module_loader_t *loader,
         const char *name, void **symbol)
 {
+    module_error_t ret;
+
     if (loader == NULL || name == NULL || symbol == NULL) {
         return MODULE_ERR_INVALID_PARAM;
+    }
+
+    ret = module_loader_get_ref(loader);
+    if (ret != MODULE_ERR_SUCCESS) {
+        return ret;
     }
 
     pthread_mutex_lock(&loader->mutex);
 
     if (loader->handle == NULL) {
         pthread_mutex_unlock(&loader->mutex);
+        module_loader_put_ref(loader);
         loader->last_error = MODULE_ERR_NOT_LOADED;
         return MODULE_ERR_NOT_LOADED;
     }
@@ -226,6 +247,7 @@ module_error_t module_loader_get_symbol(module_loader_t *loader,
     *symbol = dlsym(loader->handle, name);
     if (*symbol == NULL) {
         pthread_mutex_unlock(&loader->mutex);
+        module_loader_put_ref(loader);
         loader->last_error = MODULE_ERR_MISSING_SYMBOL;
         return MODULE_ERR_MISSING_SYMBOL;
     }
@@ -236,14 +258,50 @@ module_error_t module_loader_get_symbol(module_loader_t *loader,
 
 module_error_t module_loader_get_error(const module_loader_t *loader)
 {
+    module_error_t err;
+
     if (loader == NULL) {
         return MODULE_ERR_INVALID_PARAM;
     }
 
-    return loader->last_error;
+    pthread_mutex_lock((pthread_mutex_t *)&loader->mutex);
+    err = loader->last_error;
+    pthread_mutex_unlock((pthread_mutex_t *)&loader->mutex);
+
+    return err;
 }
 
 module_error_t module_loader_call_hello(module_loader_t *loader)
+{
+    module_error_t ret;
+
+    if (loader == NULL) {
+        return MODULE_ERR_INVALID_PARAM;
+    }
+
+    ret = module_loader_get_ref(loader);
+    if (ret != MODULE_ERR_SUCCESS) {
+        return ret;
+    }
+
+    pthread_mutex_lock(&loader->mutex);
+
+    if (!atomic_load(&loader->loaded) || loader->hello_func == NULL) {
+        pthread_mutex_unlock(&loader->mutex);
+        module_loader_put_ref(loader);
+        loader->last_error = MODULE_ERR_NOT_LOADED;
+        return MODULE_ERR_NOT_LOADED;
+    }
+
+    pthread_mutex_unlock(&loader->mutex);
+
+    loader->hello_func();
+
+    module_loader_put_ref(loader);
+    return MODULE_ERR_SUCCESS;
+}
+
+module_error_t module_loader_get_ref(module_loader_t *loader)
 {
     if (loader == NULL) {
         return MODULE_ERR_INVALID_PARAM;
@@ -251,15 +309,32 @@ module_error_t module_loader_call_hello(module_loader_t *loader)
 
     pthread_mutex_lock(&loader->mutex);
 
-    if (!atomic_load(&loader->loaded) || loader->hello_func == NULL) {
+    if (!atomic_load(&loader->loaded)) {
         pthread_mutex_unlock(&loader->mutex);
         loader->last_error = MODULE_ERR_NOT_LOADED;
         return MODULE_ERR_NOT_LOADED;
     }
 
-    loader->hello_func();
-
+    atomic_fetch_add(&loader->ref_count, 1);
     pthread_mutex_unlock(&loader->mutex);
+
+    return MODULE_ERR_SUCCESS;
+}
+
+module_error_t module_loader_put_ref(module_loader_t *loader)
+{
+    int ref_count;
+
+    if (loader == NULL) {
+        return MODULE_ERR_INVALID_PARAM;
+    }
+
+    ref_count = atomic_fetch_sub(&loader->ref_count, 1);
+    if (ref_count <= 0) {
+        atomic_store(&loader->ref_count, 0);
+        return MODULE_ERR_INVALID_PARAM;
+    }
+
     return MODULE_ERR_SUCCESS;
 }
 

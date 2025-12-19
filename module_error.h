@@ -13,7 +13,8 @@ typedef enum {
     MODULE_ERR_INIT_FAILED = -6,
     MODULE_ERR_MEMORY = -7,
     MODULE_ERR_THREAD = -8,
-    MODULE_ERR_VERSION_MISMATCH = -9
+    MODULE_ERR_VERSION_MISMATCH = -9,
+    MODULE_ERR_IN_USE = -10
 } module_error_t;
 
 const char *module_error_to_string(module_error_t err);

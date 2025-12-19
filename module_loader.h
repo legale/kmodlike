@@ -56,6 +56,8 @@ module_state_t module_loader_get_state(const module_loader_t *loader);
 
 /**
  * get symbol from loaded module
+ * automatically increments ref_count to prevent module unload
+ * caller must call module_loader_put_ref() after using the symbol
  * @param loader module loader instance
  * @param name symbol name
  * @param symbol output pointer for symbol address
@@ -77,5 +79,21 @@ module_error_t module_loader_get_error(const module_loader_t *loader);
  * @return error code
  */
 module_error_t module_loader_call_hello(module_loader_t *loader);
+
+/**
+ * get reference to module (increment ref_count)
+ * prevents module from being unloaded while in use
+ * @param loader module loader instance
+ * @return error code
+ */
+module_error_t module_loader_get_ref(module_loader_t *loader);
+
+/**
+ * put reference to module (decrement ref_count)
+ * must be called after module_loader_get_ref()
+ * @param loader module loader instance
+ * @return error code
+ */
+module_error_t module_loader_put_ref(module_loader_t *loader);
 
 #endif /* MODULE_LOADER_H */
