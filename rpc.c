@@ -120,6 +120,10 @@ const char *hello_func(int32_t argc, char **argv, char *buf, size_t bufsize) {
 }
 
 const char *stop_func(int32_t argc, char **argv, char *buf, size_t bufsize) {
+  (void)argc;
+  (void)argv;
+  (void)buf;
+  (void)bufsize;
   /* Intentionally unused parameters - documented */
   (void)argc;
   (void)argv;
@@ -535,13 +539,14 @@ int32_t rpc_client_call(const char *socket_path, int32_t argc,
   return RPC_ERR_SUCCESS;
 }
 
-rpc_context_t *rpc_init(const char *socket_path) {
+rpc_context_t *rpc_init(const char *socket_path, module_loader_t *module_loader) {
   struct sockaddr_un server_addr;
   size_t path_len;
   const char *default_path = NULL;
 
   /* Initialize the keep_running flag */
   atomic_store(&g_ctx.keep_running, true);
+  g_ctx.module_loader = module_loader;
 
   if (socket_path == NULL) {
     if (rpc_get_default_path("kmodlike", g_socket_path,
@@ -559,12 +564,6 @@ rpc_context_t *rpc_init(const char *socket_path) {
     }
     strncpy(g_socket_path, socket_path, sizeof(g_socket_path) - 1);
     g_socket_path[sizeof(g_socket_path) - 1] = '\0';
-  }
-
-  path_len = strlen(socket_path);
-  if (path_len >= sizeof(server_addr.sun_path)) {
-    RPC_LOG("socket path too long");
-    return NULL;
   }
 
   path_len = strlen(socket_path);
@@ -601,16 +600,42 @@ rpc_context_t *rpc_init(const char *socket_path) {
         char name_no_ext[256];
         const char *base;
         size_t base_len;
+        size_t copy_len;
+        int ret;
         strncpy(bin_name, default_path, sizeof(bin_name) - 1);
         bin_name[sizeof(bin_name) - 1] = '\0';
         base = basename(bin_name);
         base_len = strlen(base);
         if (base_len >= 5 && strcmp(base + base_len - 5, ".sock") == 0) {
-          strncpy(name_no_ext, base, base_len - 5);
-          name_no_ext[base_len - 5] = '\0';
-          snprintf(g_socket_path, sizeof(g_socket_path), "/tmp/%s.sock", name_no_ext);
+          copy_len = base_len - 5;
+          if (copy_len >= sizeof(name_no_ext)) {
+            copy_len = sizeof(name_no_ext) - 1;
+          }
+          memcpy(name_no_ext, base, copy_len);
+          name_no_ext[copy_len] = '\0';
+          ret = snprintf(g_socket_path, sizeof(g_socket_path), "/tmp/%.*s.sock",
+                         (int)copy_len, name_no_ext);
+          if (ret < 0 || (size_t)ret >= sizeof(g_socket_path)) {
+            RPC_LOG("socket path too long");
+            close(g_ctx.sock_fd);
+            g_ctx.sock_fd = -1;
+            return NULL;
+          }
         } else {
-          snprintf(g_socket_path, sizeof(g_socket_path), "/tmp/%s.sock", base);
+          if (base_len >= sizeof(g_socket_path) - 6) {
+            RPC_LOG("socket path too long");
+            close(g_ctx.sock_fd);
+            g_ctx.sock_fd = -1;
+            return NULL;
+          }
+          ret = snprintf(g_socket_path, sizeof(g_socket_path), "/tmp/%.*s.sock",
+                         (int)base_len, base);
+          if (ret < 0 || (size_t)ret >= sizeof(g_socket_path)) {
+            RPC_LOG("socket path too long");
+            close(g_ctx.sock_fd);
+            g_ctx.sock_fd = -1;
+            return NULL;
+          }
         }
       }
       socket_path = g_socket_path;
@@ -668,6 +693,11 @@ int rpc_get_socket_path(char *path, size_t path_size)
     strncpy(path, g_socket_path, path_size - 1);
     path[path_size - 1] = '\0';
     return 0;
+}
+
+module_loader_t *rpc_get_module_loader(void)
+{
+    return g_ctx.module_loader;
 }
 
 int rpc_deinit() {

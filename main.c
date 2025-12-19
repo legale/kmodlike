@@ -1,5 +1,5 @@
-#define _GNU_SOURCE
 #include "module_loader.h"
+#include "module_interface.h"
 #include "rpc.h"
 #include "rpc_commands.h"
 
@@ -13,8 +13,12 @@
 #include <string.h>
 #include <unistd.h>
 
-static module_loader_t *g_module_loader = NULL;
-static atomic_bool g_fatal_signal_received = ATOMIC_VAR_INIT(false);
+#define DAEMON_LOOP_INTERVAL_SEC 1U
+
+typedef struct {
+    module_loader_t *module_loader;
+    atomic_bool fatal_signal_received;
+} app_context_t;
 
 static const char *signal_name(int sig)
 {
@@ -36,33 +40,42 @@ static const char *signal_name(int sig)
     }
 }
 
+static app_context_t *g_app_context = NULL;
+
 static void fatal_signal_handler(int sig, siginfo_t *info, void *context)
 {
     (void)info;
     (void)context;
 
-    if (g_module_loader != NULL &&
-            module_loader_get_state(g_module_loader) == MODULE_STATE_LOADED) {
+    if (g_app_context != NULL && g_app_context->module_loader != NULL &&
+            module_loader_get_state(g_app_context->module_loader) == MODULE_STATE_LOADED) {
         fprintf(stderr, "fatal signal %s received from module\n", signal_name(sig));
-        atomic_store(&g_fatal_signal_received, true);
+        atomic_store(&g_app_context->fatal_signal_received, true);
     }
 }
 
-static void setup_signal_handlers(void)
+static const int FATAL_SIGNALS[] = {
+    SIGSEGV, SIGBUS, SIGFPE, SIGILL, SIGABRT, SIGSYS
+};
+
+#define FATAL_SIGNALS_COUNT (sizeof(FATAL_SIGNALS) / sizeof(FATAL_SIGNALS[0]))
+
+static void setup_signal_handlers(app_context_t *ctx)
 {
     struct sigaction sa;
-    int signals[] = {SIGSEGV, SIGBUS, SIGFPE, SIGILL, SIGABRT, SIGSYS};
     size_t i;
+
+    g_app_context = ctx;
 
     memset(&sa, 0, sizeof(sa));
     sa.sa_sigaction = fatal_signal_handler;
     sa.sa_flags = SA_SIGINFO;
     sigemptyset(&sa.sa_mask);
 
-    for (i = 0; i < sizeof(signals) / sizeof(signals[0]); i++) {
-        if (sigaction(signals[i], &sa, NULL) != 0) {
+    for (i = 0; i < FATAL_SIGNALS_COUNT; i++) {
+        if (sigaction(FATAL_SIGNALS[i], &sa, NULL) != 0) {
             fprintf(stderr, "failed to set handler for signal %d: %s\n",
-                    signals[i], strerror(errno));
+                    FATAL_SIGNALS[i], strerror(errno));
             exit(1);
         }
     }
@@ -136,21 +149,26 @@ int main(int argc, char **argv)
         }
     }
 
-    setup_signal_handlers();
+    app_context_t ctx;
 
-    g_module_loader = module_loader_create();
-    if (g_module_loader == NULL) {
+    ctx.module_loader = NULL;
+    atomic_store(&ctx.fatal_signal_received, false);
+
+    setup_signal_handlers(&ctx);
+
+    ctx.module_loader = module_loader_create();
+    if (ctx.module_loader == NULL) {
         fprintf(stderr, "failed to create module loader\n");
         return 1;
     }
 
-    if (rpc_init(NULL) == NULL) {
+    if (rpc_init(NULL, ctx.module_loader) == NULL) {
         fprintf(stderr, "failed to initialize rpc server\n");
-        module_loader_destroy(g_module_loader);
+        module_loader_destroy(ctx.module_loader);
         return 1;
     }
 
-    rpc_commands_set_loader(g_module_loader);
+    rpc_commands_set_loader(ctx.module_loader);
 
     register_str_func("insmod", rpc_insmod_func);
     register_str_func("rmmod", rpc_rmmod_func);
@@ -168,18 +186,18 @@ int main(int argc, char **argv)
     fprintf(stderr, "use: ./kmodlike insmod mod.so or ./kmodlike rmmod\n");
 
     while (1) {
-        sleep(1);
+        sleep((unsigned int)DAEMON_LOOP_INTERVAL_SEC);
 
-        if (atomic_load(&g_fatal_signal_received)) {
+        if (atomic_load(&ctx.fatal_signal_received)) {
             fprintf(stderr, "fatal signal received from module, unloading...\n");
-            module_loader_unload(g_module_loader);
+            module_loader_unload(ctx.module_loader);
             fprintf(stderr, "module crashed and was unloaded\n");
-            atomic_store(&g_fatal_signal_received, false);
+            atomic_store(&ctx.fatal_signal_received, false);
             continue;
         }
 
-        if (module_loader_get_state(g_module_loader) == MODULE_STATE_LOADED) {
-            if (module_loader_call_hello(g_module_loader) != MODULE_ERR_SUCCESS) {
+        if (module_loader_get_state(ctx.module_loader) == MODULE_STATE_LOADED) {
+            if (module_loader_call_hello(ctx.module_loader) != MODULE_ERR_SUCCESS) {
                 fprintf(stderr, "module not_loaded\n");
             }
         } else {
@@ -187,7 +205,7 @@ int main(int argc, char **argv)
         }
     }
 
-    module_loader_destroy(g_module_loader);
+    module_loader_destroy(ctx.module_loader);
     rpc_deinit();
 
     return 0;

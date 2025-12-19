@@ -1,4 +1,3 @@
-#define _GNU_SOURCE
 #include "module_loader.h"
 
 #include <dlfcn.h>
@@ -15,9 +14,11 @@
 
 struct module_loader {
     void *handle;
-    int (*init_func)(void);
+    uint32_t (*get_version_func)(void);
+    int (*init_func)(const void *);
     void (*fini_func)(void);
     void (*hello_func)(void);
+    uint32_t interface_version;
     pthread_mutex_t mutex;
     atomic_bool loaded;
     char path[MODULE_PATH_MAX];
@@ -40,6 +41,11 @@ module_loader_t *module_loader_create(void)
 
     loader->loaded = ATOMIC_VAR_INIT(false);
     loader->last_error = MODULE_ERR_SUCCESS;
+    loader->interface_version = 0U;
+    loader->get_version_func = NULL;
+    loader->init_func = NULL;
+    loader->fini_func = NULL;
+    loader->hello_func = NULL;
 
     return loader;
 }
@@ -58,11 +64,13 @@ void module_loader_destroy(module_loader_t *loader)
     free(loader);
 }
 
-module_error_t module_loader_load(module_loader_t *loader, const char *path)
+module_error_t module_loader_load(module_loader_t *loader, const char *path,
+        const module_init_args_t *init_args)
 {
     module_error_t ret;
     size_t path_len;
     void *handle;
+    uint32_t module_version;
 
     if (loader == NULL) {
         return MODULE_ERR_INVALID_PARAM;
@@ -94,17 +102,38 @@ module_error_t module_loader_load(module_loader_t *loader, const char *path)
         return MODULE_ERR_DLOPEN_FAILED;
     }
 
-    loader->init_func = (int (*)(void))dlsym(handle, "mod_init");
-    if (loader->init_func == NULL) {
+    loader->get_version_func = (uint32_t (*)(void))dlsym(handle,
+            "module_get_interface_version");
+    if (loader->get_version_func == NULL) {
         dlclose(handle);
         pthread_mutex_unlock(&loader->mutex);
         loader->last_error = MODULE_ERR_MISSING_SYMBOL;
         return MODULE_ERR_MISSING_SYMBOL;
     }
 
-    loader->fini_func = (void (*)(void))dlsym(handle, "mod_fini");
+    module_version = loader->get_version_func();
+    if (module_version != MODULE_INTERFACE_VERSION_CURRENT) {
+        dlclose(handle);
+        loader->get_version_func = NULL;
+        pthread_mutex_unlock(&loader->mutex);
+        loader->last_error = MODULE_ERR_VERSION_MISMATCH;
+        return MODULE_ERR_VERSION_MISMATCH;
+    }
+
+    loader->init_func = (int (*)(const void *))dlsym(handle, "module_init");
+    if (loader->init_func == NULL) {
+        dlclose(handle);
+        loader->get_version_func = NULL;
+        pthread_mutex_unlock(&loader->mutex);
+        loader->last_error = MODULE_ERR_MISSING_SYMBOL;
+        return MODULE_ERR_MISSING_SYMBOL;
+    }
+
+    loader->fini_func = (void (*)(void))dlsym(handle, "module_fini");
     if (loader->fini_func == NULL) {
         dlclose(handle);
+        loader->get_version_func = NULL;
+        loader->init_func = NULL;
         pthread_mutex_unlock(&loader->mutex);
         loader->last_error = MODULE_ERR_MISSING_SYMBOL;
         return MODULE_ERR_MISSING_SYMBOL;
@@ -112,19 +141,22 @@ module_error_t module_loader_load(module_loader_t *loader, const char *path)
 
     loader->hello_func = (void (*)(void))dlsym(handle, "mod_hello");
 
-    ret = loader->init_func();
+    ret = loader->init_func(init_args);
     if (ret != 0) {
         dlclose(handle);
         loader->handle = NULL;
+        loader->get_version_func = NULL;
         loader->init_func = NULL;
         loader->fini_func = NULL;
         loader->hello_func = NULL;
+        loader->interface_version = 0U;
         pthread_mutex_unlock(&loader->mutex);
         loader->last_error = MODULE_ERR_INIT_FAILED;
         return MODULE_ERR_INIT_FAILED;
     }
 
     loader->handle = handle;
+    loader->interface_version = module_version;
     strncpy(loader->path, path, MODULE_PATH_MAX - 1U);
     loader->path[MODULE_PATH_MAX - 1U] = '\0';
     atomic_store(&loader->loaded, true);
@@ -154,9 +186,11 @@ module_error_t module_loader_unload(module_loader_t *loader)
 
     dlclose(loader->handle);
     loader->handle = NULL;
+    loader->get_version_func = NULL;
     loader->init_func = NULL;
     loader->fini_func = NULL;
     loader->hello_func = NULL;
+    loader->interface_version = 0U;
     atomic_store(&loader->loaded, false);
     loader->last_error = MODULE_ERR_SUCCESS;
 

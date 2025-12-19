@@ -38,9 +38,17 @@ make test-integration # run integration tests
 module_loader_t *loader = module_loader_create();
 ```
 
-3. Load module:
+3. Prepare initialization arguments and load module:
 ```c
-module_error_t err = module_loader_load(loader, "path/to/module.so");
+#include "module_interface.h"
+
+module_init_args_t init_args;
+init_args.version = MODULE_INIT_ARGS_VERSION_CURRENT;
+init_args.log = your_log_function;  // or NULL
+init_args.get_time = your_get_time_function;  // or NULL
+init_args.user_data = your_user_data;  // or NULL
+
+module_error_t err = module_loader_load(loader, "path/to/module.so", &init_args);
 if (err != MODULE_ERR_SUCCESS) {
     // handle error
 }
@@ -61,12 +69,50 @@ module_loader_destroy(loader);
 
 ## Module Interface
 
-Modules must implement:
-- `int mod_init(void)` - initialization (returns 0 on success)
-- `void mod_fini(void)` - cleanup
+Modules must implement the stable interface defined in `module_interface.h`:
 
-Optional:
-- `void mod_hello(void)` - example function
+### Required Functions
+
+- `uint32_t module_get_interface_version(void)` - returns interface version (must return `MODULE_INTERFACE_VERSION_CURRENT`)
+- `int module_init(const void *init_args)` - initialization (returns 0 on success)
+  - `init_args` is a pointer to `module_init_args_t` structure or NULL
+  - Structure contains version, logging function, time function, and user data
+- `void module_fini(void)` - cleanup
+
+### Optional Functions
+
+- Any module-specific functions can be exported and accessed via `module_loader_get_symbol()`
+- Legacy `mod_hello()` function is still supported for backward compatibility
+
+### Interface Versioning
+
+The interface uses versioning to ensure compatibility. Modules must return `MODULE_INTERFACE_VERSION_CURRENT` from `module_get_interface_version()`. The loader will reject modules with incompatible versions.
+
+### Example Module
+
+```c
+#include "module_interface.h"
+#include <stdint.h>
+
+uint32_t module_get_interface_version(void)
+{
+    return MODULE_INTERFACE_VERSION_CURRENT;
+}
+
+int module_init(const void *init_args)
+{
+    const module_init_args_t *args = (const module_init_args_t *)init_args;
+    if (args != NULL && args->log != NULL) {
+        args->log(0, "module initializing");
+    }
+    return 0;
+}
+
+void module_fini(void)
+{
+    // cleanup
+}
+```
 
 ## License
 

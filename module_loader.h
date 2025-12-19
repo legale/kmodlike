@@ -2,6 +2,7 @@
 #define MODULE_LOADER_H
 
 #include "module_error.h"
+#include "module_interface.h"
 #include <stddef.h>
 #include <stdint.h>
 
@@ -29,16 +30,18 @@ void module_loader_destroy(module_loader_t *loader);
 
 /**
  * load module from path
- * validates module interface and calls mod_init
+ * validates module interface and calls module_init
  * @param loader module loader instance
  * @param path path to module shared library
+ * @param init_args initialization arguments or NULL
  * @return error code
  */
-module_error_t module_loader_load(module_loader_t *loader, const char *path);
+module_error_t module_loader_load(module_loader_t *loader, const char *path,
+        const module_init_args_t *init_args);
 
 /**
  * unload module
- * calls mod_fini before unloading
+ * calls module_fini before unloading
  * @param loader module loader instance
  * @return error code
  */
@@ -69,7 +72,7 @@ module_error_t module_loader_get_symbol(module_loader_t *loader,
 module_error_t module_loader_get_error(const module_loader_t *loader);
 
 /**
- * call mod_hello function from loaded module
+ * call mod_hello function from loaded module (legacy)
  * @param loader module loader instance
  * @return error code
  */

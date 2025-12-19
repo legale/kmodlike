@@ -21,6 +21,8 @@ const char *module_error_to_string(module_error_t err)
         return "memory allocation failed";
     case MODULE_ERR_THREAD:
         return "thread operation failed";
+    case MODULE_ERR_VERSION_MISMATCH:
+        return "module interface version mismatch";
     default:
         return "unknown error";
     }

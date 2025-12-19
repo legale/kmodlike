@@ -9,9 +9,6 @@
 #define __USE_MISC
 #endif
 
-#ifndef _GNU_SOURCE
-#define _GNU_SOURCE
-#endif
 
 #include <stdatomic.h>
 #include <stddef.h>
@@ -19,6 +16,8 @@
 #include <sys/select.h>
 #include <sys/types.h>
 #include <time.h>
+
+typedef struct module_loader module_loader_t;
 
 /* Constants */
 #define MAX_FUNCTIONS 100
@@ -60,6 +59,7 @@ typedef struct {
   int sock_fd;
   atomic_bool keep_running;
   pthread_t server_thread;
+  module_loader_t *module_loader;
 } rpc_context_t;
 
 /**
@@ -73,9 +73,10 @@ int rpc_get_default_path(const char *bin_name, char *path, size_t path_size);
 /**
  * Initialize the RPC server
  * @param socket_path path to Unix domain socket (NULL for default)
+ * @param module_loader module loader instance (can be NULL)
  * @return rpc_context_t * on success, NULL on failure
  */
-rpc_context_t *rpc_init(const char *socket_path);
+rpc_context_t *rpc_init(const char *socket_path, module_loader_t *module_loader);
 
 /**
  * Clean up and shut down the RPC server
@@ -88,6 +89,12 @@ int rpc_deinit(void);
  * @return 0 on success, -1 on error
  */
 int rpc_get_socket_path(char *path, size_t path_size);
+
+/**
+ * Get module loader from RPC context
+ * @return module loader instance or NULL
+ */
+module_loader_t *rpc_get_module_loader(void);
 
 /**
  * Register a function callback with the RPC server

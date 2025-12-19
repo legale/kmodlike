@@ -1,5 +1,5 @@
 CC ?= gcc
-CFLAGS = -Wall -Wextra -O2 -g -fPIC -pthread
+CFLAGS = -Wall -Wextra -Werror -O2 -g -fPIC -pthread
 LDFLAGS = -ldl -lpthread
 TEST_CFLAGS = $(CFLAGS) -I.
 TEST_LDFLAGS = $(LDFLAGS) -L.
