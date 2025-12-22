@@ -86,7 +86,7 @@ int module_init(const void *init_args)
 
 /* module finalization function */
 __attribute__((visibility("default")))
-void module_fini(void)
+void module_deinit(void)
 {
     /* сбрасываем флаг активности, чтобы поток не вызывал фатальные сигналы */
     atomic_store(&g_module_active, false);

@@ -38,7 +38,7 @@ int module_init(const void *init_args);
  * must be implemented by every module
  * called before module is unloaded
  */
-void module_fini(void);
+void module_deinit(void);
 
 #endif /* MODULE_INTERFACE_H */
 
